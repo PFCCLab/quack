@@ -425,7 +425,7 @@ def run(
 
     epi_args = gemm.EpilogueArguments(add_to_output=add_to_output)
     varlen_args = VarlenArguments(mCuSeqlensM, mCuSeqlensK, tensormaps_tensor, mAIdx)
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     # compile gemm kernel
     compiled_gemm = cute.compile(
         gemm,

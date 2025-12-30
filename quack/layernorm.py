@@ -307,7 +307,7 @@ def layernorm(
         if mean is not None
         else None
     )
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = (dtype, N, rstd is not None, mean is not None)
     if compile_key not in layernorm.compile_cache:
         rmsnorm_op = LayerNorm(dtype, N)

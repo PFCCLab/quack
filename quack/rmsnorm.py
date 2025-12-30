@@ -403,7 +403,7 @@ def _rmsnorm_fwd(
         if rstd is not None
         else None
     )
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = (
         N,
         dtype,
@@ -1012,7 +1012,7 @@ def _rmsnorm_bwd(
     )
     rstd_tensor = from_dlpack(rstd.detach(), assumed_align=4).mark_layout_dynamic(leading_dim=0)
 
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
 
     compile_key = (
         N,
@@ -1179,33 +1179,33 @@ def rmsnorm(
     return RMSNormFunction.apply(x, weight, bias, residual, out_dtype, residual_dtype, eps, prenorm)
 
 
-class QuackRMSNorm(torch.nn.RMSNorm):
-    """RMSNorm module that behaves like torch.nn.RMSNorm.
+# class QuackRMSNorm(torch.nn.RMSNorm):
+#     """RMSNorm module that behaves like torch.nn.RMSNorm.
 
-    This class provides a drop-in replacement for torch.nn.RMSNorm that uses
-    the quack.rmsnorm implementation under the hood.
+#     This class provides a drop-in replacement for torch.nn.RMSNorm that uses
+#     the quack.rmsnorm implementation under the hood.
 
-    Args:
-        dim (int): The dimension to normalize over
-        eps (float, optional): A small constant for numerical stability. Default: 1e-6
+#     Args:
+#         dim (int): The dimension to normalize over
+#         eps (float, optional): A small constant for numerical stability. Default: 1e-6
 
-    Attributes:
-        weight (torch.nn.Parameter): The learnable weight parameter
-        eps (float): A small constant for numerical stability
-    """
+#     Attributes:
+#         weight (torch.nn.Parameter): The learnable weight parameter
+#         eps (float): A small constant for numerical stability
+#     """
 
-    def __init__(
-        self, dim: int, eps: float = 1e-6, elementwise_affine: bool = True, device=None, dtype=None
-    ):
-        super().__init__(dim, eps, elementwise_affine, device=device, dtype=dtype)
+#     def __init__(
+#         self, dim: int, eps: float = 1e-6, elementwise_affine: bool = True, device=None, dtype=None
+#     ):
+#         super().__init__(dim, eps, elementwise_affine, device=device, dtype=dtype)
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Apply RMSNorm to the input tensor.
+#     def forward(self, x: Tensor) -> Tensor:
+#         """Apply RMSNorm to the input tensor.
 
-        Args:
-            x (Tensor): Input tensor
+#         Args:
+#             x (Tensor): Input tensor
 
-        Returns:
-            Tensor: Normalized tensor
-        """
-        return rmsnorm(x, self.weight, eps=self.eps)
+#         Returns:
+#             Tensor: Normalized tensor
+#         """
+#         return rmsnorm(x, self.weight, eps=self.eps)

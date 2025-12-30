@@ -2611,7 +2611,7 @@ def run(
     # Get current CUDA stream from PyTorch
     torch_stream = torch.cuda.current_stream()
     # Get the raw stream pointer as a CUstream
-    current_stream = cuda.CUstream(torch_stream.cuda_stream)
+    current_stream = cuda.CUstream(torch_stream.stream_base.raw_stream)
     # Compile gemm kernel
     compiled_gemm = cute.compile(
         gemm,
@@ -2678,7 +2678,7 @@ def run(
 
     from triton.testing import do_bench
 
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
 
     flops = 2 * m * n * k * l
 

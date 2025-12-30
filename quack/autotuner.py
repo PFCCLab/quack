@@ -167,7 +167,7 @@ class Autotuner:
                 print(f"Autotuning failed with {e}")
             return [float("inf"), float("inf"), float("inf")]
 
-    @torch.compiler.disable
+    # @torch.compiler.disable
     def check_disk_cache(self, tuning_key, configs, bench_fn):
         if not tuning_key:
             bench_fn()
@@ -225,7 +225,7 @@ class Autotuner:
                 used_cached_result = False
                 pruned_configs = self.prune_configs(kwargs)
 
-                @torch.compiler.disable  # Don't want any tracing here
+                # @torch.compiler.disable  # Don't want any tracing here
                 def benchmark():
                     bench_start = time.time()
                     timings = {

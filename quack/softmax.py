@@ -208,7 +208,7 @@ def _softmax_fwd(x: torch.Tensor, out: torch.Tensor) -> None:
         )
     )
     x_tensor, out_tensor = [convert_from_dlpack(tensor) for tensor in (x, out)]
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = (dtype, N)
     if compile_key not in _softmax_fwd.compile_cache:
         softmax_op = Softmax(dtype, N)
@@ -426,7 +426,7 @@ def _softmax_backward(dy: torch.Tensor, y: torch.Tensor, dx: torch.Tensor) -> No
         )
     )
     dy_tensor, y_tensor, dx_tensor = [convert_from_dlpack(tensor) for tensor in (dy, y, dx)]
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
 
     compile_key = (dtype, N)
     if compile_key not in _softmax_backward.compile_cache:

@@ -332,7 +332,7 @@ def cross_entropy_fwd_out(
         else None
     )
     dx_tensor = convert_from_dlpack(dx) if dx is not None else None
-    stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
 
     compile_key = (
         dtype,
@@ -610,7 +610,7 @@ def _cross_entropy_backward(
     dloss_tensor = from_dlpack(dloss.detach(), assumed_align=4).mark_layout_dynamic()
     lse_tensor = from_dlpack(lse.detach(), assumed_align=4).mark_layout_dynamic()
     target_tensor = from_dlpack(target.detach(), assumed_align=8).mark_layout_dynamic()
-    stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
 
     compile_key = (dtype, N, target.dtype, dloss.stride(), lse.stride(), target.stride())
     if compile_key not in _cross_entropy_backward.compile_cache:

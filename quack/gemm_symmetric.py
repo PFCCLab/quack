@@ -12,6 +12,8 @@ import cutlass.cute as cute
 import cutlass.torch as cutlass_torch
 from cutlass import Float32
 from cutlass.cute.runtime import make_ptr
+import cuda.bindings.driver as cuda
+import torch
 
 
 class GemmSymmetricMixin(GemmActMixin, GemmSm90):
@@ -98,7 +100,8 @@ def gemm_symmetric(
     )
     varlen_args = None
 
-    current_stream = cutlass_torch.current_stream()
+    # current_stream = cutlass_torch.current_stream()
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = GemmWrapperBase.get_compile_key(
         tensor_infos,
         activation,

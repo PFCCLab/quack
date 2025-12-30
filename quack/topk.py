@@ -193,7 +193,7 @@ def _topk_fwd(x: torch.Tensor, k: int, values: torch.Tensor, indices: torch.Tens
     x_tensor, values_tensor, indices_tensor = [
         convert_from_dlpack(tensor) for tensor in (x, values, indices)
     ]
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = (dtype, N, k)
     if compile_key not in _topk_fwd.compile_cache:
         topk_op = TopK(dtype, N, k)
