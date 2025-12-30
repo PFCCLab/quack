@@ -2,6 +2,7 @@ from typing import Optional
 from functools import partial
 
 from torch import Tensor
+import torch
 
 import cutlass.cute as cute
 import cutlass.torch as cutlass_torch
@@ -11,6 +12,7 @@ from cutlass.cute.runtime import from_dlpack, make_ptr
 from quack.cute_dsl_utils import get_device_capacity, get_max_active_clusters
 from quack.gemm_wrapper_utils import GemmWrapperBase
 from quack.gemm_default_epi import GemmDefaultSm90, GemmDefaultSm100
+import cuda.bindings.driver as cuda
 
 
 def gemm(
@@ -132,7 +134,8 @@ def gemm(
         pingpong,
     )
 
-    current_stream = cutlass_torch.current_stream()
+    # current_stream = cutlass_torch.current_stream()
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = GemmWrapperBase.get_compile_key(
         tensor_infos,
         None,  # activation

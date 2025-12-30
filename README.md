@@ -1,4 +1,30 @@
-# 🦆 QuACK: A Quirky Assortment of CuTe Kernels 🦆
+# 🦆 QuACK: A Quirky Assortment of CuTe Kernels 🦆 ❤️ PaddlePaddle
+
+> [!NOTE]
+>
+> This repo is a fork of the original QuACK project, with modifications to enhance compatibility and integration with PaddlePaddle.
+> Currently branch is align with 3d0ab3ec2164749caac8f269f771e66a40efd2de
+>
+> **Installation**
+>
+> ```bash
+> git clone https://github.com/PFCCLab/quack.git
+> cd quack
+> pip install .
+> ```
+>
+> **Usage**
+>
+> ```python
+> import paddle
+> paddle.enable_compat(scope={"quack", "triton"})  # Enable torch proxy before importing quack
+> import quack
+> # use quack
+> ```
+
+The original README.md content is as follows:
+
+---
 
 Kernels are written in the [CuTe-DSL](https://docs.nvidia.com/cutlass/media/docs/pythonDSL/cute_dsl_general/dsl_introduction.html).
 

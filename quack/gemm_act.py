@@ -4,6 +4,7 @@ from functools import partial
 from dataclasses import dataclass
 
 from torch import Tensor
+import torch
 
 import cutlass
 import cutlass.cute as cute
@@ -24,6 +25,7 @@ from quack.gemm_wrapper_utils import GemmWrapperBase
 import quack.sm90_utils as sm90_utils
 import quack.copy_utils as copy_utils
 import quack.activation
+import cuda.bindings.driver as cuda
 
 
 class GemmActMixin(GemmDefaultEpiMixin):
@@ -456,7 +458,8 @@ def gemm_act(
         pingpong,
     )
 
-    current_stream = cutlass_torch.current_stream()
+    # current_stream = cutlass_torch.current_stream()
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = GemmWrapperBase.get_compile_key(
         tensor_infos,
         activation,

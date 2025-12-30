@@ -16,6 +16,8 @@ from quack.gemm_act import GemmActMixin
 from quack.cute_dsl_utils import get_device_capacity, get_max_active_clusters
 from quack.gemm_wrapper_utils import GemmWrapperBase
 import quack.activation
+import cuda.bindings.driver as cuda
+import torch
 
 
 class GemmDActMixin(GemmActMixin):
@@ -163,7 +165,8 @@ def gemm_dact(
         pingpong,
     )
 
-    current_stream = cutlass_torch.current_stream()
+    # current_stream = cutlass_torch.current_stream()
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
     compile_key = GemmWrapperBase.get_compile_key(
         tensor_infos,
         activation,

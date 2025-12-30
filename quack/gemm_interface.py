@@ -36,7 +36,8 @@ gated_to_pytorch_fn_map = {
 }
 
 
-default_device_capacity = get_device_capacity(torch.device("cuda"))
+import paddle
+default_device_capacity = get_device_capacity(paddle.device("cuda"))
 
 
 def default_config(device):
