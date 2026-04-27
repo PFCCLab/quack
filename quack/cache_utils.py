@@ -30,6 +30,9 @@ CACHE_ENABLED: bool = os.getenv("QUACK_CACHE_ENABLED", "1") == "1"
 CACHE_DIR: str | None = os.getenv("QUACK_CACHE_DIR", None)
 COMPILE_ONLY: bool = False
 
+import logging
+_logger = logging.getLogger(__name__)
+
 # Downstream projects can append directories here to include their sources
 # in the cache fingerprint. Must be set before the first jit_cache call.
 EXTRA_SOURCE_DIRS: list[Path] = []
@@ -139,6 +142,7 @@ def jit_cache(fn):
         # 1. In-memory hit
         if cache_key in cache:
             hits += 1
+            _logger.debug("JIT %s in-memory hit.", fn.__qualname__)
             return _noop_kernel if COMPILE_ONLY else cache[cache_key]
 
         # 2. Disk hit
@@ -152,17 +156,21 @@ def jit_cache(fn):
             try:
                 with FileLock(lock_path, exclusive=False, timeout=LOCK_TIMEOUT):
                     if o_path.exists():
+                        _logger.info("JIT %s disk-cache hit (%s), loading ...", fn.__qualname__, sha[:8])
                         m = cute.runtime.load_module(str(o_path), enable_tvm_ffi=True)
                         loaded = m[EXPORT_FUNC_NAME]
                         cache[cache_key] = loaded
                         hits += 1
+                        _logger.info("JIT %s disk-cache load done.", fn.__qualname__)
                         return _noop_kernel if COMPILE_ONLY else loaded
             except RuntimeError:
                 pass
 
         # 3. Compile
         misses += 1
+        _logger.info("JIT %s compiling (cache miss) ...", fn.__qualname__)
         compiled_fn = fn(*args, **kwargs)
+        _logger.info("JIT %s compile done.", fn.__qualname__)
 
         # 4. Store
         cache[cache_key] = compiled_fn

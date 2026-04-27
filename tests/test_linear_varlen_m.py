@@ -1,4 +1,23 @@
 # Copyright (C) 2025, Tri Dao.
+
+import paddle
+paddle.enable_compat()
+
+# Paddle compat: torch.device is a ProxyModule (paddle.device module), not a type.
+# cutlass.torch uses Optional[torch.device] as a type annotation, which requires a real type.
+import sys as _sys
+import torch as _torch
+if not isinstance(_torch.device, type):
+    class _TorchDevice:
+        def __init__(self, type_str="cpu", index=None):
+            if isinstance(type_str, _TorchDevice):
+                self.type, self.index = type_str.type, type_str.index; return
+            self.type, self.index = str(type_str), index
+        def __repr__(self): return f"device(type={self.type!r})"
+        def __eq__(self, o): return (self.type, self.index) == ((o.type, o.index) if isinstance(o, _TorchDevice) else (o, None))
+        def __hash__(self): return hash((self.type, self.index))
+    _sys.modules["torch"].device = _TorchDevice
+
 import math
 import pytest
 import torch
@@ -78,8 +97,8 @@ def test_gemm_varlen_m(
 ):
     """Test GEMM with variable length M dimension using cu_seqlens_m."""
     device = "cuda"
-    torch.random.manual_seed(0)
-    seq_lens = torch.randint(8192 - 1024, 8192 + 1024, (num_groups,), device=device)
+    torch.manual_seed(0)
+    seq_lens = torch.randint(8192 - 1024, 8192 + 1024, (num_groups,))
     total_m = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_m = torch.cat(
@@ -140,8 +159,8 @@ def test_gemm_add_varlen_m(
 ):
     """Test GEMM with addition and variable length M dimension using cu_seqlens_m."""
     device = "cuda"
-    torch.random.manual_seed(0)
-    seq_lens = torch.randint(8192 - 1024, 8192 + 1024, (num_groups,), device=device)
+    torch.manual_seed(0)
+    seq_lens = torch.randint(8192 - 1024, 8192 + 1024, (num_groups,))
     total_m = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_m = torch.cat(
@@ -215,8 +234,8 @@ def test_gemm_add_inplace_varlen_m(
 ):
     """Test in-place GEMM with addition and variable length M dimension: out = alpha * A @ B + beta * out."""
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(100, 500, (num_groups,), device=device)
+    torch.manual_seed(42)
+    seq_lens = torch.randint(100, 500, (num_groups,))
     total_m = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_m = torch.cat(
@@ -295,8 +314,8 @@ def test_gemm_act_varlen_m(
 ):
     """Test GEMM with activation and variable length M dimension."""
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(100, 500, (num_groups,), device=device)
+    torch.manual_seed(42)
+    seq_lens = torch.randint(100, 500, (num_groups,))
     total_m = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_m = torch.cat(
@@ -358,8 +377,8 @@ def test_gemm_dact_varlen_m(
 ):
     """Test GEMM with activation gradient and variable length M dimension."""
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(100, 500, (num_groups,), device=device)
+    torch.manual_seed(42)
+    seq_lens = torch.randint(100, 500, (num_groups,))
     total_m = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_m = torch.cat(
@@ -421,8 +440,8 @@ def test_gemm_gated_varlen_m(
 ):
     """Test GEMM with gated activation and variable length M dimension."""
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(50, 300, (num_groups,), device="cpu")
+    torch.manual_seed(42)
+    seq_lens = torch.randint(50, 300, (num_groups,))
     total_m = seq_lens.sum().item()
     cu_seqlens_m = torch.cat(
         [torch.zeros(1, dtype=torch.int32), seq_lens.cumsum(0).to(torch.int32)]
@@ -496,8 +515,8 @@ def test_gemm_dgated_varlen_m(
 ):
     """Test GEMM with gated activation gradient and variable length M dimension."""
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(50, 300, (num_groups,), device="cpu")
+    torch.manual_seed(42)
+    seq_lens = torch.randint(50, 300, (num_groups,))
     total_m = seq_lens.sum().item()
     cu_seqlens_m = torch.cat(
         [torch.zeros(1, dtype=torch.int32), seq_lens.cumsum(0).to(torch.int32)]

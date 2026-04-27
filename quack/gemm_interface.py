@@ -350,6 +350,8 @@ def gemm(
     bias: Optional[Tensor] = None,  # (N,) or (L, N)
     alpha: float | Tensor = 1.0,
     out_dtype: Optional[torch.dtype] = None,
+    C: Optional[Tensor] = None,  # for D = alpha*A@B + beta*C
+    beta: float = 1.0,
     cu_seqlens_m: Optional[Tensor] = None,
     cu_seqlens_k: Optional[Tensor] = None,
     A_idx: Optional[Tensor] = None,  # (total_M,) or (total_K,) indices for gather_A when varlen
@@ -387,6 +389,8 @@ def gemm(
         bias=bias,
         alpha=alpha,
         alpha_tensor=alpha_tensor,
+        C=C,
+        beta=beta,
         cu_seqlens_m=cu_seqlens_m,
         cu_seqlens_k=cu_seqlens_k,
         A_idx=A_idx,
@@ -416,17 +420,23 @@ def gemm_out(
     bias: Optional[Tensor] = None,  # (N,) or (L, N)
     alpha: float = 1.0,
     alpha_tensor: Optional[Tensor] = None,
+    C: Optional[Tensor] = None,  # (M, N) or (L, M, N) — for D = alpha*A@B + beta*C
+    beta: float = 1.0,
     cu_seqlens_m: Optional[Tensor] = None,
     cu_seqlens_k: Optional[Tensor] = None,
     A_idx: Optional[Tensor] = None,  # (total_M,) or (total_K,) indices for gather_A when varlen
     batch_idx_permute: Optional[Tensor] = None,  # (L,) permutation of batch indices for scheduler
     dynamic_scheduler: bool = False,
     tuned: bool = True,
-    rounding_mode: int = RoundingMode.RN,
+    rounding_mode: int = 0,  # RoundingMode.RN — literal needed for custom_op schema
     sr_seed: int = 0,
     sr_seed_tensor: Optional[Tensor] = None,
 ) -> None:
-    """GEMM with pre-allocated output tensor."""
+    """GEMM with pre-allocated output tensor.
+
+    When C is provided with beta != 0, computes D = alpha * (A @ B) + beta * C.
+    This is fused into the CUTLASS epilogue — no separate add kernel.
+    """
     fn = gemm_tuned if tuned else partial(gemm_tuned.fn, config=None)
     alpha = alpha_tensor if alpha_tensor is not None else alpha
     sr_seed_arg = sr_seed_tensor if sr_seed_tensor is not None else sr_seed
@@ -434,9 +444,10 @@ def gemm_out(
         A,
         B,
         out,
-        C=None,
+        C=C,
         bias=bias,
         alpha=alpha,
+        beta=beta,
         cu_seqlens_m=cu_seqlens_m,
         cu_seqlens_k=cu_seqlens_k,
         A_idx=A_idx,
@@ -462,9 +473,11 @@ def gemm_ref(
     """Reference implementation for GEMM with pre-allocated output."""
     # The out_dtype argument requires torch >= 2.8
     out_dtype = A.dtype if out_dtype is None else out_dtype
+    # Paddle compat: fancy indexing on non-contiguous tensors may give wrong shapes
+    A = A.contiguous()
     if cu_seqlens_m is None and cu_seqlens_k is None:
         fn = torch.bmm if A.ndim == 3 else torch.mm
-        out = fn(A, B, out_dtype=out_dtype, out=out)
+        out = fn(A, B).to(out_dtype)
         if not isinstance(alpha, float) or alpha != 1.0:
             out *= alpha
         if bias is not None:
@@ -482,7 +495,7 @@ def gemm_ref(
                 if A_idx is not None
                 else A[cu_seqlens_m[i] : cu_seqlens_m[i + 1]]
             )
-            torch.mm(A_slice, B[i], out=out[cu_seqlens_m[i] : cu_seqlens_m[i + 1]])
+            out[cu_seqlens_m[i] : cu_seqlens_m[i + 1]] = torch.mm(A_slice, B[i])
             if not isinstance(alpha, float) or alpha != 1.0:
                 out[cu_seqlens_m[i] : cu_seqlens_m[i + 1]] *= alpha
             if bias is not None:
@@ -497,7 +510,7 @@ def gemm_ref(
                 if A_idx is not None
                 else A[:, cu_seqlens_k[i] : cu_seqlens_k[i + 1]]
             )
-            torch.mm(A_slice, B[cu_seqlens_k[i] : cu_seqlens_k[i + 1], :], out=out[i])
+            out[i] = torch.mm(A_slice, B[cu_seqlens_k[i] : cu_seqlens_k[i + 1], :])
         if not isinstance(alpha, float) or alpha != 1.0:
             out *= alpha
         if bias is not None:
@@ -625,9 +638,13 @@ def gemm_add_ref(
     out_dtype: Optional[torch.dtype] = None,
 ) -> Tensor:
     """Reference implementation for GEMM with addition and pre-allocated output."""
+    # Paddle compat: fancy indexing on non-contiguous tensors may give wrong shapes
+    A = A.contiguous()
     if cu_seqlens_m is None and cu_seqlens_k is None:
         if isinstance(alpha, float) and isinstance(beta, float):
-            out = torch.addmm(C, A, B, out_dtype=out_dtype, alpha=alpha, beta=beta, out=out)
+            out = torch.addmm(C, A, B, alpha=alpha, beta=beta)
+            if out_dtype is not None:
+                out = out.to(out_dtype)
         else:
             out_dtype = (
                 out.dtype if out is not None else (out_dtype if out_dtype is not None else A.dtype)
@@ -656,7 +673,7 @@ def gemm_add_ref(
             result = alpha * torch.mm(A_slice, B[i]) + beta * C_slice
             if bias is not None:
                 result += bias[i]
-            out_slice.copy_(result)
+            out_slice.copy_(result.to(out_slice.dtype))
     else:  # cu_seqlens_k is not None
         # Handle varlen_k case
         L = cu_seqlens_k.shape[0] - 1
@@ -671,7 +688,7 @@ def gemm_add_ref(
             )
             B_slice = B[cu_seqlens_k[i] : cu_seqlens_k[i + 1], :]
             result = alpha * torch.mm(A_slice, B_slice) + beta * C[i]
-            out[i].copy_(result)
+            out[i].copy_(result.to(out[i].dtype))
         if bias is not None:
             out += bias
     return out
@@ -1453,6 +1470,8 @@ def _register_precompile_fake(custom_op, autotuned_fn, rewrite=None):
     """
     import inspect
 
+    if not hasattr(custom_op, "_init_fn"):
+        return  # Paddle compat: CustomOpDef doesn't expose _init_fn
     sig = inspect.signature(custom_op._init_fn)
 
     @custom_op.register_fake

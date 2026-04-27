@@ -20,6 +20,12 @@ import triton
 
 from . import __version__
 
+# Paddle compat: torch.compiler may not exist under paddle.enable_compat()
+try:
+    _compiler_disable = torch.compiler.disable
+except AttributeError:
+    _compiler_disable = lambda fn=None, **kw: fn if fn is not None else (lambda f: f)
+
 
 PACKAGE_NAME = "quack"
 VERSION = __version__
@@ -149,6 +155,10 @@ class Autotuner:
         metadata, and compiles with COMPILE_ONLY=True. Workers stay alive to amortize
         import overhead across multiple configs. The parent then loads instantly from
         the .o cache during benchmarking.
+
+        This is a best-effort optimization: if workers fail to spawn or crash
+        (e.g. Paddle compat proxy, missing PYTHONPATH, CUDA init conflict),
+        we fall back silently and the main process compiles during benchmarking.
         """
         from quack.cache_utils import CACHE_ENABLED
 
@@ -182,80 +192,114 @@ class Autotuner:
 
         def _send(stream, msg):
             data = pickle.dumps(msg)
-            stream.write(struct.pack("<I", len(data)))
-            stream.write(data)
-            stream.flush()
+            try:
+                stream.write(struct.pack("<I", len(data)))
+                stream.write(data)
+                stream.flush()
+            except BrokenPipeError:
+                return False
+            return True
 
         def _recv(stream):
-            header = stream.read(4)
-            if len(header) < 4:
+            try:
+                header = stream.read(4)
+                if len(header) < 4:
+                    return None
+                length = struct.unpack("<I", header)[0]
+                return pickle.loads(stream.read(length)) if length else None
+            except (BrokenPipeError, OSError, pickle.UnpicklingError):
                 return None
-            length = struct.unpack("<I", header)[0]
-            return pickle.loads(stream.read(length)) if length else None
 
-        # Serialize tensor metadata
-        tensor_meta = []
-        for arg in args:
-            if isinstance(arg, Tensor):
-                tensor_meta.append(
+        try:
+            # Serialize tensor metadata
+            # Normalize dtype to "torch.*" format for worker compatibility.
+            # Under Paddle compat proxy, str(dtype) returns "paddle.bfloat16"
+            # instead of "torch.bfloat16", which the worker's _dtype_map
+            # wouldn't recognize.
+            def _normalize_dtype_str(dtype_str: str) -> str:
+                if dtype_str.startswith("paddle."):
+                    return "torch." + dtype_str[len("paddle."):]
+                return dtype_str
+
+            tensor_meta = []
+            for arg in args:
+                if isinstance(arg, Tensor):
+                    tensor_meta.append(
+                        {
+                            "shape": list(arg.shape),
+                            "stride": list(arg.stride()),
+                            "dtype": _normalize_dtype_str(str(arg.dtype)),
+                        }
+                    )
+                else:
+                    tensor_meta.append(arg)
+
+            fn_module = self.fn.__module__
+            fn_qualname = self.fn.__qualname__
+
+            # Launch persistent worker pool
+            workers = []
+            for _ in range(max_workers):
+                try:
+                    p = subprocess.Popen(
+                        [sys.executable, "-m", "quack._compile_worker"],
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL if not verbose else None,
+                    )
+                    ready = _recv(p.stdout)
+                    if ready != "READY":
+                        p.kill()
+                        p.wait()
+                        continue
+                    workers.append(p)
+                except (OSError, subprocess.SubprocessError):
+                    continue
+
+            if not workers:
+                return
+
+            # Round-robin dispatch configs to workers
+            pending = [0] * len(workers)
+            for i, config in enumerate(configs):
+                w = workers[i % len(workers)]
+                if not _send(
+                    w.stdin,
                     {
-                        "shape": list(arg.shape),
-                        "stride": list(arg.stride()),
-                        "dtype": str(arg.dtype),
-                    }
-                )
-            else:
-                tensor_meta.append(arg)
+                        "fn_module": fn_module,
+                        "fn_qualname": fn_qualname,
+                        "tensor_meta": tensor_meta,
+                        "kwargs": kwargs,
+                        "config_kwargs": config.all_kwargs(),
+                    },
+                ):
+                    # Worker died — stop dispatching to it, remaining configs
+                    # will be compiled in-process during benchmarking.
+                    break
+                pending[i % len(workers)] += 1
 
-        fn_module = self.fn.__module__
-        fn_qualname = self.fn.__qualname__
+            # Collect all results
+            for wi, w in enumerate(workers):
+                for _ in range(pending[wi]):
+                    _recv(w.stdout)
 
-        # Launch persistent worker pool
-        workers = []
-        for _ in range(max_workers):
-            p = subprocess.Popen(
-                [sys.executable, "-m", "quack._compile_worker"],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL if not verbose else None,
-            )
-            ready = _recv(p.stdout)
-            if ready != "READY":
-                p.kill()
-                continue
-            workers.append(p)
+            # Shutdown workers (close stdin → worker exits)
+            for w in workers:
+                try:
+                    w.stdin.close()
+                    w.wait(timeout=10)
+                except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+                    w.kill()
+                    w.wait()
 
-        if not workers:
-            return
+            if verbose:
+                print(f"Pre-compilation done in {time.time() - t0:.1f}s")
 
-        # Round-robin dispatch configs to workers
-        pending = [0] * len(workers)
-        for i, config in enumerate(configs):
-            w = workers[i % len(workers)]
-            _send(
-                w.stdin,
-                {
-                    "fn_module": fn_module,
-                    "fn_qualname": fn_qualname,
-                    "tensor_meta": tensor_meta,
-                    "kwargs": kwargs,
-                    "config_kwargs": config.all_kwargs(),
-                },
-            )
-            pending[i % len(workers)] += 1
-
-        # Collect all results
-        for wi, w in enumerate(workers):
-            for _ in range(pending[wi]):
-                _recv(w.stdout)
-
-        # Shutdown workers (close stdin → worker exits)
-        for w in workers:
-            w.stdin.close()
-            w.wait()
-
-        if verbose:
-            print(f"Pre-compilation done in {time.time() - t0:.1f}s")
+        except Exception as e:
+            # Pre-compilation is best-effort; never let it crash the caller.
+            if verbose:
+                print(f"Pre-compilation failed ({type(e).__name__}: {e}), "
+                      f"falling back to in-process compilation")
 
     def _bench(self, *args, config, **meta):
         verbose = os.environ.get(f"{PACKAGE_NAME.upper()}_PRINT_AUTOTUNING", None) == "1"
@@ -300,7 +344,7 @@ class Autotuner:
                 print(f"Autotuning failed with {e}")
             return [float("inf"), float("inf"), float("inf")]
 
-    @torch.compiler.disable
+    @_compiler_disable
     def check_disk_cache(self, tuning_key, configs, bench_fn):
         if not tuning_key:
             bench_fn()
@@ -358,7 +402,7 @@ class Autotuner:
                 used_cached_result = False
                 pruned_configs = self.prune_configs(kwargs)
 
-                @torch.compiler.disable  # Don't want any tracing here
+                @_compiler_disable  # Don't want any tracing here
                 def benchmark():
                     self._precompile(*args, configs=pruned_configs, **kwargs)
                     _gpu_warmup()

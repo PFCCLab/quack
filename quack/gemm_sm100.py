@@ -11,7 +11,9 @@ import torch
 import cutlass
 import cutlass.cute as cute
 from cutlass.cute.nvgpu import cpasync, tcgen05
-import cutlass.torch as cutlass_torch
+# cutlass.torch is lazy-imported in _get_cutlass_torch() below — importing it
+# at module scope crashes the CuTe-DSL AST preprocessor under Paddle compat
+# (torch.device is replaced with a ProxyModule that breaks typing.Optional).
 import cutlass.pipeline as pipeline
 from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
 import cutlass.utils.blackwell_helpers as sm100_utils
@@ -2468,6 +2470,8 @@ def run(
     if not torch.cuda.is_available():
         raise RuntimeError("GPU is required to run this example!")
 
+    import cutlass.torch as cutlass_torch  # lazy import — see module-level comment
+
     torch.manual_seed(1111)
 
     # Create and permute tensor A/B/C
@@ -2561,10 +2565,10 @@ def run(
     epi_args = gemm.EpilogueArguments()
     varlen_args = VarlenArguments()
 
-    # Get current CUDA stream from PyTorch
+    # Get current CUDA stream from PyTorch/Paddle
     torch_stream = torch.cuda.current_stream()
-    # Get the raw stream pointer as a CUstream
-    current_stream = cuda.CUstream(torch_stream.cuda_stream)
+    # Get the raw stream pointer as a CUstream (Paddle compat: .stream_base.raw_stream)
+    current_stream = cuda.CUstream(torch_stream.stream_base.raw_stream)
     # Compile gemm kernel
     compiled_gemm = cute.compile(
         gemm,
@@ -2631,7 +2635,7 @@ def run(
 
     from triton.testing import do_bench
 
-    current_stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    current_stream = cuda.CUstream(torch.cuda.current_stream().stream_base.raw_stream)
 
     flops = 2 * m * n * k * l
 

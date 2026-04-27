@@ -1,4 +1,22 @@
 # Copyright (C) 2025, Tri Dao.
+import paddle
+paddle.enable_compat()
+
+# Paddle compat: torch.device is a ProxyModule (paddle.device module), not a type.
+# cutlass.torch uses Optional[torch.device] as a type annotation, which requires a real type.
+import sys as _sys
+import torch as _torch
+if not isinstance(_torch.device, type):
+    class _TorchDevice:
+        def __init__(self, type_str="cpu", index=None):
+            if isinstance(type_str, _TorchDevice):
+                self.type, self.index = type_str.type, type_str.index; return
+            self.type, self.index = str(type_str), index
+        def __repr__(self): return f"device(type={self.type!r})"
+        def __eq__(self, o): return (self.type, self.index) == ((o.type, o.index) if isinstance(o, _TorchDevice) else (o, None))
+        def __hash__(self): return hash((self.type, self.index))
+    _sys.modules["torch"].device = _TorchDevice
+
 import math
 import pytest
 import torch
@@ -70,8 +88,8 @@ def test_gemm_varlen_k(
     permute_batch,
 ):
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(50, 300, (num_groups,), device="cpu")
+    torch.manual_seed(42)
+    seq_lens = torch.randint(50, 300, (num_groups,))
     total_k = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_k = torch.cat(
@@ -122,7 +140,7 @@ def test_gemm_varlen_k_with_zero_lengths(
     gather_A,
 ):
     device = "cuda"
-    torch.random.manual_seed(42)
+    torch.manual_seed(42)
     seq_lens = torch.tensor([150, 64, 0, 200, 0], device="cpu", dtype=torch.int32)
     num_groups = seq_lens.shape[0]
     total_k = seq_lens.sum().item()
@@ -179,8 +197,8 @@ def test_gemm_add_varlen_k(
     gather_A,
 ):
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(50, 300, (num_groups,), device="cpu")
+    torch.manual_seed(42)
+    seq_lens = torch.randint(50, 300, (num_groups,))
     total_k = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_k = torch.cat(
@@ -253,8 +271,8 @@ def test_gemm_add_inplace_varlen_k(
     gather_A,
 ):
     device = "cuda"
-    torch.random.manual_seed(42)
-    seq_lens = torch.randint(50, 300, (num_groups,), device="cpu")
+    torch.manual_seed(42)
+    seq_lens = torch.randint(50, 300, (num_groups,))
     total_k = seq_lens.sum().item()
     # Create cumulative sequence lengths (num_groups + 1)
     cu_seqlens_k = torch.cat(
