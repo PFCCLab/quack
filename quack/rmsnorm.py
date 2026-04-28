@@ -1131,36 +1131,38 @@ def rmsnorm(
     return RMSNormFunction.apply(x, weight, bias, residual, out_dtype, residual_dtype, eps, prenorm)
 
 
-class QuackRMSNorm(torch.nn.RMSNorm):
-    """RMSNorm module that behaves like torch.nn.RMSNorm.
+if hasattr(torch.nn, "RMSNorm"):
 
-    This class provides a drop-in replacement for torch.nn.RMSNorm that uses
-    the quack.rmsnorm implementation under the hood.
+    class QuackRMSNorm(torch.nn.RMSNorm):
+        """RMSNorm module that behaves like torch.nn.RMSNorm.
 
-    Args:
-        dim (int): The dimension to normalize over
-        eps (float, optional): A small constant for numerical stability. Default: 1e-6
-
-    Attributes:
-        weight (torch.nn.Parameter): The learnable weight parameter
-        eps (float): A small constant for numerical stability
-    """
-
-    def __init__(
-        self, dim: int, eps: float = 1e-6, elementwise_affine: bool = True, device=None, dtype=None
-    ):
-        super().__init__(dim, eps, elementwise_affine, device=device, dtype=dtype)
-
-    def forward(self, x: Tensor) -> Tensor:
-        """Apply RMSNorm to the input tensor.
+        This class provides a drop-in replacement for torch.nn.RMSNorm that uses
+        the quack.rmsnorm implementation under the hood.
 
         Args:
-            x (Tensor): Input tensor
+            dim (int): The dimension to normalize over
+            eps (float, optional): A small constant for numerical stability. Default: 1e-6
 
-        Returns:
-            Tensor: Normalized tensor
+        Attributes:
+            weight (torch.nn.Parameter): The learnable weight parameter
+            eps (float): A small constant for numerical stability
         """
-        return rmsnorm(x, self.weight, eps=self.eps)
+
+        def __init__(
+            self, dim: int, eps: float = 1e-6, elementwise_affine: bool = True, device=None, dtype=None
+        ):
+            super().__init__(dim, eps, elementwise_affine, device=device, dtype=dtype)
+
+        def forward(self, x: Tensor) -> Tensor:
+            """Apply RMSNorm to the input tensor.
+
+            Args:
+                x (Tensor): Input tensor
+
+            Returns:
+                Tensor: Normalized tensor
+            """
+            return rmsnorm(x, self.weight, eps=self.eps)
 
 
 def layernorm_fwd(

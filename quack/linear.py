@@ -12,6 +12,17 @@ from quack.gemm_interface import gemm_gated, gemm_dgated
 from quack.gemm_interface import act_to_pytorch_fn_map, gated_to_pytorch_fn_map
 
 
+def _record_needs_input_grad(ctx, *args):
+    """Record stop_gradient flags for all forward args on ctx for Paddle compat.
+    PyTorch's needs_input_grad indexes ALL forward args (excluding ctx), so we
+    must track all of them. Non-tensor args are always False.
+    """
+    if len(args) > 0 and hasattr(args[0], "stop_gradient"):
+        ctx._quack_needs_input_grad = tuple(
+            not a.stop_gradient if isinstance(a, Tensor) else False for a in args
+        )
+
+
 def _ensure_contiguous(t):
     """Ensure last-dim stride is 1. Under torch.compile use unconditional .contiguous()
     (dynamo can't inspect strides on fake tensors); otherwise check first to avoid copies.
@@ -144,6 +155,8 @@ class LinearFunc(torch.autograd.Function):
         # Convert types while autocast is still enabled, then disable it for the body.
         x, weight = linear_fwd_convert_type(x, weight)
         with torch.amp.autocast("cuda", enabled=False):
+            # Paddle compat: record stop_gradient flags for all forward args
+            _record_needs_input_grad(ctx, x, weight, bias)
             ctx.weight_dtype = weight.dtype
             ctx.fuse_grad_accum = fuse_grad_accum
             ctx.ops = ops
@@ -156,6 +169,7 @@ class LinearFunc(torch.autograd.Function):
             )
             ctx.bias_dtype = bias.dtype if bias is not None else None
             ctx.compute_dbias = bias is not None and ctx.needs_input_grad[2]
+            ctx._has_bias = bias is not None  # Paddle: track for backward return count
             return out.reshape(*batch_shape, out.shape[-1])
 
     @staticmethod
@@ -174,7 +188,11 @@ class LinearFunc(torch.autograd.Function):
             dweight = linear_bwd_compute_weight_grad(
                 ctx, dout, x, weight_og, ops.matmul_bwd_dw, ops.matmul_bwd_dw_inplace
             )
-            return dx, dweight, dbias, None, None
+            # Paddle PyLayer: return grads only for tensor inputs
+            grads = [dx, dweight]
+            if ctx._has_bias:
+                grads.append(dbias)
+            return tuple(grads)
 
 
 def linear_func(x, weight, bias=None, fuse_grad_accum=False, tuned=True):
@@ -194,6 +212,8 @@ class LinearActFunc(torch.autograd.Function):
         """
         x, weight = linear_fwd_convert_type(x, weight)
         with torch.amp.autocast("cuda", enabled=False):
+            # Paddle compat: record stop_gradient flags for all forward args
+            _record_needs_input_grad(ctx, x, weight, activation, bias, store_preact, fuse_grad_accum, ops)
             ctx.weight_dtype = weight.dtype
             ctx.fuse_grad_accum = fuse_grad_accum
             ctx.ops = ops
@@ -210,6 +230,7 @@ class LinearActFunc(torch.autograd.Function):
                 out = out.reshape(*batch_shape, out.shape[-1])
             ctx.bias_dtype = bias.dtype if bias is not None else None
             ctx.compute_dbias = bias is not None and ctx.needs_input_grad[3]
+            ctx._has_bias = bias is not None  # Paddle: track for backward return count
             ctx.mark_non_differentiable(postact)
             ctx.set_materialize_grads(False)  # We don't want to materialize grads for postact
             return out, postact.reshape(*batch_shape, postact.shape[-1])
@@ -227,7 +248,11 @@ class LinearActFunc(torch.autograd.Function):
             dweight = linear_bwd_compute_weight_grad(
                 ctx, dout, x, weight_og, ops.matmul_bwd_dw, ops.matmul_bwd_dw_inplace
             )
-            return dx, dweight, None, dbias, None, None, None
+            # Paddle PyLayer: return grads only for tensor inputs
+            grads = [dx, dweight]
+            if ctx._has_bias:
+                grads.append(dbias)
+            return tuple(grads)
 
 
 def linear_act_func(
@@ -255,6 +280,8 @@ class DActLinearFunc(torch.autograd.Function):
         """
         x, weight = linear_fwd_convert_type(x, weight)
         with torch.amp.autocast("cuda", enabled=False):
+            # Paddle compat: record stop_gradient flags for all forward args
+            _record_needs_input_grad(ctx, preact, weight, x, activation, fuse_grad_accum, ops)
             ctx.weight_dtype = weight.dtype
             ctx.fuse_grad_accum = fuse_grad_accum
             ctx.ops = ops
@@ -303,7 +330,7 @@ class DActLinearFunc(torch.autograd.Function):
             dweight = linear_bwd_compute_weight_grad(
                 ctx, dout, x, weight_og, ops.matmul_bwd_dw, ops.matmul_bwd_dw_inplace
             )
-            return dpreact, dweight, None, None, None, None
+            return dpreact, dweight, None
 
 
 def act_linear_func(preact, weight, x, activation, fuse_grad_accum=False, tuned=True):

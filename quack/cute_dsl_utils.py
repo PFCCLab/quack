@@ -76,7 +76,6 @@ def _parse_arch_str(arch_str: str) -> Tuple[int, int]:
     return int(major), int(minor)
 
 
-@lru_cache
 def get_device_capacity(device: torch.device = None) -> Tuple[int, int]:
     """Return (major, minor) device capability.
 
@@ -86,6 +85,16 @@ def get_device_capacity(device: torch.device = None) -> Tuple[int, int]:
     arch_override = os.environ.get("QUACK_ARCH")
     if arch_override is not None:
         return _parse_arch_str(arch_override)
+    # Paddle compat: normalize tensor/device to int so paddle.cuda.get_device_capability works
+    if isinstance(device, torch.Tensor):
+        device = device.place.gpu_device_id() if hasattr(device.place, 'gpu_device_id') else 0
+    elif device is not None and not isinstance(device, (int, str)):
+        device = None  # fall back to current device
+    return _get_device_capability_cached(device)
+
+
+@lru_cache
+def _get_device_capability_cached(device=None):
     return torch.cuda.get_device_capability(device)
 
 
