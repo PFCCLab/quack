@@ -327,6 +327,93 @@ def dswiglu(
 
 
 @dsl_user_op
+def sigmoid_precise(x: F32_or_F32x2, *, loc=None, ip=None) -> F32_or_F32x2:
+    """Precise sigmoid using exp instead of tanh approximation.
+
+    sigmoid(x) = 1 / (1 + exp(-x))
+    Unlike `sigmoid`, this does NOT use `tanh.approx.f32` (MUFU.TANH) and
+    therefore avoids the hardware tanh approximation error.
+    """
+    if const_expr(not isinstance(x, tuple)):
+        return Float32(1.0) / (Float32(1.0) + cute.math.exp(-x, fastmath=False))
+    else:
+        exp_neg_x = (
+            cute.math.exp(-x[0], fastmath=False),
+            cute.math.exp(-x[1], fastmath=False),
+        )
+        one_plus = cute.arch.add_packed_f32x2(exp_neg_x, (1.0, 1.0))
+        return (Float32(1.0) / one_plus[0], Float32(1.0) / one_plus[1])
+
+
+@dsl_user_op
+def silu_precise(x: F32_or_F32x2, *, loc=None, ip=None) -> F32_or_F32x2:
+    """Precise SiLU: x * sigmoid(x), using exp-based sigmoid (no tanh approx)."""
+    if const_expr(not isinstance(x, tuple)):
+        return x * sigmoid_precise(x)
+    else:
+        return cute.arch.mul_packed_f32x2(x, sigmoid_precise(x))
+
+
+@dsl_user_op
+def swiglu_precise(x: F32_or_F32x2, y: F32_or_F32x2, *, loc=None, ip=None) -> F32_or_F32x2:
+    """Precise SwiGLU: silu(x) * y, using exp-based sigmoid (no tanh approx).
+
+    Counterpart of `swiglu`; produces identical math but avoids
+    `tanh.approx.f32` so every sigmoid evaluation is IEEE-correct `expf`.
+    """
+    if const_expr(not isinstance(x, tuple)):
+        return silu_precise(x) * y
+    else:
+        return cute.arch.mul_packed_f32x2(silu_precise(x), y)
+
+
+@dsl_user_op
+def dswiglu_precise(
+    x: F32_or_F32x2,
+    y: F32_or_F32x2,
+    dout: F32_or_F32x2,
+    *,
+    loc=None,
+    ip=None,
+) -> Tuple[F32_or_F32x2, F32_or_F32x2, F32_or_F32x2]:
+    """Precise SwiGLU backward using exp-based sigmoid (no tanh approx).
+
+    Given: swiglu_out = silu(x) * y, dout = grad w.r.t. swiglu_out
+    Returns: (dx, dy, swiglu_out) where
+        dx = dout * y * d_silu(x),  dy = dout * silu(x)
+        d_silu(x) = sigmoid(x) + silu(x) * (1 - sigmoid(x))
+
+    Expanded to (sigmoid_x - silu_x*sigmoid_x) * dout + silu_x * dout so it
+    reuses FFMA lanes like `dswiglu`, only replacing the tanh-based sigmoid
+    with `sigmoid_precise` (expf-based).
+    """
+    if const_expr(not isinstance(x, tuple)):
+        sigmoid_x = sigmoid_precise(x)
+        silu_x = x * sigmoid_x  # FMUL
+        silu_x_dout = silu_x * dout  # FMUL
+        # d_silu(x) * dout = (sigmoid_x - silu_x*sigmoid_x) * dout + silu_x * dout
+        d_silu_x_dout = (sigmoid_x - silu_x * sigmoid_x) * dout + silu_x_dout
+        dx = d_silu_x_dout * y  # FMUL
+        dy = silu_x_dout
+        swiglu_out = silu_x * y  # FMUL
+        return dx, dy, swiglu_out
+    else:
+        sigmoid_x = sigmoid_precise(x)
+        silu_x = cute.arch.mul_packed_f32x2(x, sigmoid_x)
+        silu_x_dout = cute.arch.mul_packed_f32x2(silu_x, dout)
+        sigmoid_x_minus_silu_x_sigmoid_x = cute.arch.fma_packed_f32x2(
+            sigmoid_x, (-silu_x[0], -silu_x[1]), sigmoid_x
+        )
+        d_silu_x_dout = cute.arch.fma_packed_f32x2(
+            sigmoid_x_minus_silu_x_sigmoid_x, dout, silu_x_dout
+        )
+        dx = cute.arch.mul_packed_f32x2(d_silu_x_dout, y)
+        dy = silu_x_dout
+        swiglu_out = cute.arch.mul_packed_f32x2(silu_x, y)
+        return dx, dy, swiglu_out
+
+
+@dsl_user_op
 def swiglu_oai(
     x: F32_or_F32x2, y: F32_or_F32x2, alpha: float = 1.702, *, loc=None, ip=None
 ) -> F32_or_F32x2:
@@ -553,6 +640,7 @@ dact_fn_map = {
 
 gate_fn_map = {
     "swiglu": swiglu,
+    "swiglu_precise": swiglu_precise,
     "swiglu_oai": swiglu_oai,
     "reglu": reglu,
     "geglu": geglu,
@@ -561,6 +649,7 @@ gate_fn_map = {
 
 dgate_fn_map = {
     "swiglu": dswiglu,
+    "swiglu_precise": dswiglu_precise,
     "swiglu_oai": dswiglu_oai,
     "reglu": dreglu,
     "geglu": dgeglu,
