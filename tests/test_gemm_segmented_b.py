@@ -41,7 +41,9 @@ def _case(rng, E, I, H, c, sizes):
 
 @pytest.mark.skipif(paddle.device.cuda.get_device_capability()[0] < 10, reason="SM100+")
 @pytest.mark.parametrize("c", [2, 3, 4])
-@pytest.mark.parametrize("I", [64, 128])
+# 16 / 32 / 48 / 96: segments shorter than (or not a multiple of) the default
+# 64-wide k-tile run with a 1- or 2-instruction k-tile
+@pytest.mark.parametrize("I", [16, 32, 48, 64, 96, 128])
 def test_segmented_b_matches_concatenated_weight(c, I):
     rng = np.random.RandomState(0)
     E, H = 32, 512
@@ -77,6 +79,10 @@ def test_segmented_b_rejects_bad_shapes():
     with pytest.raises(AssertionError):  # A's K is not num_segs * B's K
         gemm(A[:30, :192], W.permute(0, 2, 1), out=out, cu_seqlens_m=_dev(cum, paddle.int32),
              B_idx=_dev(bidx, paddle.int32), tuned=False, config=_config())
+    cum2, bidx2, A2, W2 = _case(rng, 16, 24, 256, 2, [10, 20])
+    with pytest.raises(AssertionError):  # B's K (24) is not whole MMA instructions (16)
+        gemm(A2[:30], W2.permute(0, 2, 1), out=out, cu_seqlens_m=_dev(cum2, paddle.int32),
+             B_idx=_dev(bidx2, paddle.int32), tuned=False, config=_config())
     with pytest.raises(AssertionError):  # B_idx rows != groups
         gemm(A[:30], W.permute(0, 2, 1), out=out, cu_seqlens_m=_dev(cum, paddle.int32),
              B_idx=_dev(bidx[:1], paddle.int32), tuned=False, config=_config())
