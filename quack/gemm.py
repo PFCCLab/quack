@@ -57,6 +57,9 @@ def _compile_gemm(
     sr_seed_mode,
     # segmented B changes the load warp and the B k sym_int: part of the jit key
     seg_B=False,
+    # MMA instructions per k-tile (4 = the default cta tile K); < 4 only for a
+    # segmented B with short segments
+    mma_inst_tile_k=4,
 ):
     GemmCls = GemmDefaultSm100 if device_capacity[0] > 9 else GemmDefaultSm90
     mA, mB, mD, mC, m, n, k, l = make_fake_gemm_tensors(
@@ -121,6 +124,7 @@ def _compile_gemm(
         epi_args,
         scheduler_args,
         varlen_args,
+        post_init=(None if mma_inst_tile_k == 4 else lambda g: setattr(g, "mma_inst_tile_k", mma_inst_tile_k)),
     )
 
 
@@ -176,6 +180,7 @@ def gemm(
         assert A.stride(-2) == 1, "varlen_k requires A to be m-major"
         assert B.stride(-2) == 1, "varlen_k requires B to be n-major"
     seg_B = B_idx is not None
+    mma_inst_tile_k = 4
     if seg_B:
         assert varlen_m, "B_idx (segmented B) requires varlen_m"
         assert not varlen_k, "B_idx (segmented B) is incompatible with varlen_k"
@@ -188,9 +193,13 @@ def gemm(
         assert A.shape[-1] == B_idx.shape[1] * B.shape[-1], (
             f"A's k ({A.shape[-1]}) must be B_idx.shape[1] ({B_idx.shape[1]}) segments of B's k ({B.shape[-1]})"
         )
-        # a segment must be whole k-tiles (cta tile K = 64 for 16-bit, 128 for 8-bit inputs)
-        seg_k_div = 64 if A.element_size() == 2 else 128
-        assert B.shape[-1] % seg_k_div == 0, f"segmented B needs B's k divisible by {seg_k_div}, got {B.shape[-1]}"
+        # A segment must be whole k-tiles: one k-tile reads one B batch.  The cta
+        # tile K is 4 MMA instructions (64 for 16-bit, 128 for 8-bit inputs);
+        # shorter segments use a tile of 2 or 1 instructions instead.
+        inst_k = 16 if A.element_size() == 2 else 32
+        seg_k = B.shape[-1]
+        assert seg_k % inst_k == 0, f"segmented B needs B's k divisible by {inst_k}, got {seg_k}"
+        mma_inst_tile_k = next(n for n in (4, 2, 1) if seg_k % (n * inst_k) == 0)
 
     device_capacity = get_device_capacity(A.device)
     assert device_capacity[0] in [9, 10, 11], "Only SM90, SM100, and SM110 are supported"
@@ -244,6 +253,7 @@ def gemm(
         rounding_mode,
         sr_seed_mode,
         seg_B,
+        mma_inst_tile_k,
     )
 
     from quack.cache_utils import COMPILE_ONLY
