@@ -196,7 +196,7 @@ def gemm(
         # A segment must be whole k-tiles: one k-tile reads one B batch.  The cta
         # tile K is 4 MMA instructions (64 for 16-bit, 128 for 8-bit inputs);
         # shorter segments use a tile of 2 or 1 instructions instead.
-        inst_k = 16 if A.element_size() == 2 else 32
+        inst_k = 256 // (8 * A.element_size())  # tcgen05 instruction K: 256 bits
         seg_k = B.shape[-1]
         assert seg_k % inst_k == 0, f"segmented B needs B's k divisible by {inst_k}, got {seg_k}"
         mma_inst_tile_k = next(n for n in (4, 2, 1) if seg_k % (n * inst_k) == 0)
@@ -253,7 +253,8 @@ def gemm(
         rounding_mode,
         sr_seed_mode,
         seg_B,
-        mma_inst_tile_k,
+        # keyword only when it differs, so every other GEMM keeps its JIT key
+        **({} if mma_inst_tile_k == 4 else {"mma_inst_tile_k": mma_inst_tile_k}),
     )
 
     from quack.cache_utils import COMPILE_ONLY

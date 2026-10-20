@@ -150,6 +150,11 @@ class GemmSm100(GemmSm90):
         >>> gemm(mA, mB, mD, max_active_clusters, stream)
     """
 
+    # MMA instructions per CTA k-tile: cta tile K = this x the instruction K
+    # (64 for 16-bit inputs at 4).  `gemm` sets a smaller value on the instance
+    # only for a segmented B whose segments are shorter than 4 instructions.
+    mma_inst_tile_k = 4
+
     arch = 100
 
     EpilogueArguments = GemmSm90.EpilogueArguments
@@ -198,10 +203,6 @@ class GemmSm100(GemmSm90):
         self.pingpong = False  # for compatibility with GemmSm90
         self.use_clc_persistence = use_clc_persistence
         self.gather_A = gather_A
-        # MMA instructions per CTA k-tile (cta tile K = this x the instruction K: 64
-        # for 16-bit inputs at 4).  Smaller for a segmented B whose segments are
-        # shorter than 4 instructions (set by `gemm` before compile).
-        self.mma_inst_tile_k = 4
         if gather_A:
             assert cluster_shape_mnk[1] == 1, "Cluster shape N must be 1 for gather A "
 
