@@ -21,6 +21,14 @@ class VarlenArguments(NamedTuple):
     # segments of B's K extent; segment j of group g is multiplied by
     # B[..., mBIdx[g, j]]. Requires varlen_m (groups on M), excludes varlen_k.
     mBIdx: Optional[cute.Tensor] = None
+    # Dual-source varlen_k: each batch's K is a segment of (A, B, mAIdx) per
+    # mCuSeqlensK followed by a segment of a second (A2, B2, mAIdx2) per
+    # mCuSeqlensK2, accumulated into one output tile. Requires gather_A.
+    mCuSeqlensK2: Optional[cute.Tensor] = None
+    mAIdx2: Optional[cute.Tensor] = None
+    # The second source's A / B (host-side only: B2 gets its own TMA atom).
+    mA2: Optional[cute.Tensor] = None
+    mB2: Optional[cute.Tensor] = None
 
 
 class VarlenManager:
@@ -30,6 +38,8 @@ class VarlenManager:
         cu_seqlens_k: Optional[cute.Tensor] = None
         mAIdx: Optional[cute.Tensor] = None
         mBIdx: Optional[cute.Tensor] = None
+        cu_seqlens_k2: Optional[cute.Tensor] = None
+        mAIdx2: Optional[cute.Tensor] = None
 
         @staticmethod
         @cute.jit
@@ -39,6 +49,8 @@ class VarlenManager:
                 cu_seqlens_k=args.mCuSeqlensK,
                 mAIdx=args.mAIdx,
                 mBIdx=args.mBIdx,
+                cu_seqlens_k2=args.mCuSeqlensK2,
+                mAIdx2=args.mAIdx2,
             )
 
     def __init__(
@@ -61,6 +73,7 @@ class VarlenManager:
         self.varlen_k = const_expr(params.cu_seqlens_k is not None)
         self.gather_A = const_expr(params.mAIdx is not None)
         self.seg_B = const_expr(params.mBIdx is not None)
+        self.dual_k = const_expr(params.cu_seqlens_k2 is not None)
         self._loc = loc
         self._ip = ip
 
@@ -73,6 +86,11 @@ class VarlenManager:
             assert args.mCuSeqlensM is not None, "mBIdx (segmented B) requires varlen_m"
             assert args.mCuSeqlensK is None, "mBIdx (segmented B) is incompatible with varlen_k"
             assert cute.rank(args.mBIdx) == 2, "mBIdx must be (num_groups, num_segs)"
+        if args.mCuSeqlensK2 is not None:
+            assert args.mCuSeqlensK is not None, "dual-source K requires varlen_k"
+            assert args.mAIdx is not None and args.mAIdx2 is not None, (
+                "dual-source K requires gather_A for both sources"
+            )
         return VarlenManager.Params.create(args, loc=loc, ip=ip)
 
     @staticmethod
@@ -98,6 +116,22 @@ class VarlenManager:
             return self.params.cu_seqlens_k[batch_idx + 1] - self.params.cu_seqlens_k[batch_idx]
         else:
             return self._len_k_static
+
+    def len_k2(self, batch_idx: Int32) -> Int32:
+        """K length of the second source's segment (dual-source K only)."""
+        return self.params.cu_seqlens_k2[batch_idx + 1] - self.params.cu_seqlens_k2[batch_idx]
+
+    def k_tile_cnt(self, batch_idx: Int32, tile_k: int) -> Int32:
+        """K tiles of a batch; with dual-source K, both segments' tiles."""
+        cnt = cute.ceil_div(self.len_k(batch_idx), tile_k)
+        if const_expr(self.dual_k):
+            cnt = cnt + cute.ceil_div(self.len_k2(batch_idx), tile_k)
+        return cnt
+
+    def len_k_total(self, batch_idx: Int32) -> Int32:
+        if const_expr(self.dual_k):
+            return self.len_k(batch_idx) + self.len_k2(batch_idx)
+        return self.len_k(batch_idx)
 
     def offset_batch_A(self, mA_mkl: cute.Tensor, batch_idx: Int32) -> cute.Tensor:
         params = self.params
@@ -132,6 +166,29 @@ class VarlenManager:
         else:
             mAIdx_mk = params.mAIdx[None, batch_idx]
         return mAIdx_mk
+
+    def offset_batch_AIdx2(self, batch_idx: Int32) -> cute.Tensor:
+        params = self.params
+        return cute.domain_offset((params.cu_seqlens_k2[batch_idx],), params.mAIdx2)
+
+    def offset_batch_B2(self, mB2_nkl: cute.Tensor, batch_idx: Int32) -> cute.Tensor:
+        """Second source's B, offset like ``offset_batch_B`` by mCuSeqlensK2."""
+        return self._offset_ragged_k(mB2_nkl, self.params.cu_seqlens_k2, batch_idx)
+
+    def _offset_ragged_k(self, mB_nkl: cute.Tensor, cu: cute.Tensor, batch_idx: Int32):
+        offset = cu[batch_idx]
+        ragged_rank = const_expr(cute.rank(mB_nkl))
+        if const_expr(ragged_rank == 2):  # Didn't create ragged tensor
+            return cute.domain_offset((None, offset), mB_nkl)
+        length = cu[batch_idx + 1] - offset
+        ptr_shift = const_expr(ragged_rank == 3)
+        return copy_utils.offset_ragged_tensor(
+            mB_nkl,
+            offset,
+            length,
+            ragged_dim=1,
+            ptr_shift=ptr_shift,
+        )
 
     def seg_batches(self, batch_idx: Int32) -> cute.Tensor:
         """Segment -> B batch ids of group ``batch_idx``: ``mBIdx[batch_idx, :]``."""
