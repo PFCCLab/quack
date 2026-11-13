@@ -12,7 +12,7 @@ from enum import IntEnum
 import cutlass
 from cutlass import Float32, Uint32
 from cutlass._mlir import ir
-from cutlass._mlir.dialects import arith, llvm, vector
+from cutlass._mlir.dialects import llvm, vector
 from cutlass.cutlass_dsl import dsl_user_op, Int32, T
 
 
@@ -162,18 +162,8 @@ def convert_f32_to_bf16_sr(
         lo_idx = pair_idx * 2
         hi_idx = pair_idx * 2 + 1
 
-        src_lo = vector.extractelement(
-            src_vec,
-            position=arith.constant(Int32.mlir_type, lo_idx, loc=loc, ip=ip),
-            loc=loc,
-            ip=ip,
-        )
-        src_hi = vector.extractelement(
-            src_vec,
-            position=arith.constant(Int32.mlir_type, hi_idx, loc=loc, ip=ip),
-            loc=loc,
-            ip=ip,
-        )
+        src_lo = vector.extract(src_vec, [], [lo_idx], loc=loc, ip=ip)
+        src_hi = vector.extract(src_vec, [], [hi_idx], loc=loc, ip=ip)
 
         group_idx = pair_idx // 4
         intra_idx = pair_idx % 4
@@ -185,13 +175,7 @@ def convert_f32_to_bf16_sr(
         packed_i32 = cvt_f32x2_bf16x2_rs(Float32(src_lo), Float32(src_hi), entropy, loc=loc, ip=ip)
 
         packed_i32_val = cutlass.Int32(packed_i32).ir_value(loc=loc, ip=ip)
-        i32_vec = vector.insertelement(
-            packed_i32_val,
-            i32_vec,
-            position=arith.constant(Int32.mlir_type, pair_idx, loc=loc, ip=ip),
-            loc=loc,
-            ip=ip,
-        )
+        i32_vec = vector.insert(packed_i32_val, i32_vec, [], [pair_idx], loc=loc, ip=ip)
 
     dst_vec = llvm.bitcast(dst_vec_type, i32_vec, loc=loc, ip=ip)
     return dst_vec
